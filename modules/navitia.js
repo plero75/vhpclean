@@ -1,38 +1,44 @@
-const PROXY_URL = "https://ratp-proxy.hippodrome-proxy42.workers.dev/?url=";
-const STOP_AREA_ID = "stop_area:IDFM:70640"; // Joinville-le-Pont
-const NAVITIA_BASE = "https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia";
+const proxyURL = "https://ratp-proxy.hippodrome-proxy42.workers.dev/?url=";
+const baseURL = "https://prim.iledefrance-mobilites.fr/marketplace/v2/navitia";
 
-export async function getNextStops() {
-  const now = new Date();
-  const formattedTime = now.toISOString().replace(/[-:]/g, '').split('.')[0]; // YYYYMMDDTHHmmss
-  const url = `${PROXY_URL}${encodeURIComponent(`${NAVITIA_BASE}/coverage/fr-idf/${STOP_AREA_ID}/stop_schedules?from_datetime=${formattedTime}&count=1&data_freshness=realtime`)}`;
+// IDFM StopArea pour Joinville-le-Pont RER
+const stopMonitoringRef = "STIF:StopPoint:Q:43135::1";
 
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Erreur API Navitia: ${response.status}`);
+async function getNextStops() {
+  const url = `${proxyURL}${baseURL}/stop-monitoring?MonitoringRef=${stopMonitoringRef}`;
 
-  const data = await response.json();
-  const schedules = data.stop_schedules;
+  const res = await fetch(url);
+  const data = await res.json();
 
-  if (!schedules || schedules.length === 0) {
+  if (!data.Siri || !data.Siri.ServiceDelivery || !data.Siri.ServiceDelivery.StopMonitoringDelivery) {
+    throw new Error("Structure inattendue dans la réponse de stop-monitoring");
+  }
+
+  const monitoredVisits = data.Siri.ServiceDelivery.StopMonitoringDelivery[0].MonitoredStopVisit;
+
+  if (!monitoredVisits || monitoredVisits.length === 0) {
     throw new Error("Aucun train trouvé");
   }
 
-  // On prend le premier train
-  const journey = schedules[0];
-  const vehicleLink = journey.vehicle_journey?.id;
+  const vehicleJourneyId = monitoredVisits[0].MonitoredVehicleJourney.Frames[0].DatedVehicleJourneyRef;
 
-  if (!vehicleLink) {
-    throw new Error("Aucune info de parcours disponible");
+  return getVehicleJourneyDetails(vehicleJourneyId);
+}
+
+async function getVehicleJourneyDetails(vehicleJourneyId) {
+  const url = `${proxyURL}${baseURL}/vehicle_journeys/${encodeURIComponent(vehicleJourneyId)}`;
+
+  const res = await fetch(url);
+  const data = await res.json();
+
+  if (!data.vehicle_journeys || data.vehicle_journeys.length === 0) {
+    throw new Error("Aucun détail de trajet trouvé");
   }
 
-  // Deuxième appel : récupérer la liste des arrêts du trajet
-  const stopsUrl = `${PROXY_URL}${encodeURIComponent(`${NAVITIA_BASE}/coverage/fr-idf/vehicle_journeys/${vehicleLink}/stop_times`)}`;
-  const stopsResp = await fetch(stopsUrl);
-  if (!stopsResp.ok) throw new Error("Impossible de récupérer les arrêts");
+  const stops = data.vehicle_journeys[0].stop_times.map(stop => ({
+    name: stop.stop_point.name,
+    departure: stop.departure_time
+  }));
 
-  const stopData = await stopsResp.json();
-  return stopData.stop_times?.map(s => ({
-    name: s.stop_point.name,
-    time: s.arrival_time || s.departure_time
-  })) || [];
+  return stops;
 }
